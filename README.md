@@ -91,12 +91,39 @@ pip install -e ".[dev]"
 ```bash
 # Copy and edit environment variables
 cp .env.example .env
-# Edit .env with your RPC URL, API keys, and private key
 
-# Edit config.json with wallet addresses and trading parameters
+# Edit .env: set your POLYGON_RPC_URL and PRIVATE_KEY
+# (API credentials will be derived automatically in step 4)
 ```
 
-### 4. Run
+### 4. Derive API Credentials
+
+Your Polymarket CLOB API credentials (api_key, api_secret, api_passphrase) are
+derived from your wallet's private key. You only need to do this **once per wallet**.
+
+```bash
+# Option A: Private key already in .env
+python -m src.main setup
+
+# Option B: Pass private key directly
+python -m src.main setup --private-key 0xYOUR_PRIVATE_KEY
+```
+
+This will:
+1. Sign an EIP-712 message with your private key
+2. Send the signature to Polymarket's auth endpoint
+3. Receive and save api_key, api_secret, api_passphrase to your `.env`
+
+You can also run the standalone script: `python scripts/setup_api_keys.py`
+
+### 5. Configure Trading
+
+```bash
+# Edit config.json with wallet addresses to track and trading parameters
+# See config.json for all available options
+```
+
+### 6. Run
 
 ```bash
 # Dry-run mode (default, no real trades)
@@ -127,9 +154,9 @@ docker compose up -d
 | Variable | Description |
 |---|---|
 | `POLYGON_RPC_URL` | Polygon JSON-RPC endpoint |
-| `POLYMARKET_API_KEY` | Your Polymarket CLOB API key |
-| `POLYMARKET_API_SECRET` | Your Polymarket CLOB API secret |
-| `POLYMARKET_API_PASSPHRASE` | Your Polymarket CLOB API passphrase |
+| `POLYMARKET_API_KEY` | CLOB API key (auto-derived via `setup` command) |
+| `POLYMARKET_API_SECRET` | CLOB API secret (auto-derived via `setup` command) |
+| `POLYMARKET_API_PASSPHRASE` | CLOB API passphrase (auto-derived via `setup` command) |
 | `PRIVATE_KEY` | Your wallet private key for signing orders |
 | `DRY_RUN` | `true` for paper trading, `false` for live |
 

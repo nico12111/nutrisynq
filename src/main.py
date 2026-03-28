@@ -2,6 +2,7 @@
 CLI Entry Point for the Polymarket Copy-Trading Bot.
 
 Usage:
+    copy-trader setup          # Derive API keys from your private key
     copy-trader run [--config config.json] [--dry-run]
     copy-trader status
     copy-trader check-wallets
@@ -46,6 +47,110 @@ def run(config: str, dry_run: bool) -> None:
     except KeyboardInterrupt:
         console.print("\n[yellow]Bot stopped by user.[/yellow]")
         sys.exit(0)
+
+
+@cli.command()
+@click.option("--env-file", default=".env", help="Path to .env file")
+@click.option(
+    "--private-key",
+    default=None,
+    help="Private key (hex). If not provided, reads from PRIVATE_KEY in .env",
+)
+def setup(env_file: str, private_key: str | None) -> None:
+    """Derive Polymarket CLOB API credentials from your wallet private key.
+
+    This signs a message with your key and registers it with Polymarket's
+    auth service. The returned api_key, api_secret, and api_passphrase are
+    written to your .env file so the bot can trade on your account.
+
+    You only need to run this once per wallet.
+    """
+    import os
+    from pathlib import Path
+
+    env_path = Path(env_file)
+
+    # Resolve private key
+    pk = private_key
+    if not pk:
+        if env_path.exists():
+            from dotenv import load_dotenv
+            load_dotenv(env_path)
+        pk = os.environ.get("PRIVATE_KEY", "")
+
+    if not pk:
+        console.print("[red]No private key found.[/red]")
+        console.print("Provide via --private-key or set PRIVATE_KEY in your .env file.")
+        sys.exit(1)
+
+    if not pk.startswith("0x"):
+        pk = "0x" + pk
+
+    console.print("[bold]Polymarket API Key Setup[/bold]\n")
+    console.print("This will sign a message with your private key and register")
+    console.print("it with Polymarket to obtain CLOB API credentials.\n")
+
+    try:
+        from py_clob_client.client import ClobClient
+    except ImportError:
+        console.print("[red]py-clob-client not installed.[/red]")
+        console.print("Run: pip install py-clob-client")
+        sys.exit(1)
+
+    try:
+        client = ClobClient(
+            host="https://clob.polymarket.com",
+            chain_id=137,
+            key=pk,
+        )
+        wallet_address = client.get_address()
+        console.print(f"Wallet: [cyan]{wallet_address}[/cyan]")
+        console.print("Deriving API key...\n")
+
+        creds = client.derive_api_key()
+
+        if not creds or "apiKey" not in creds:
+            console.print(f"[red]Failed to derive credentials: {creds}[/red]")
+            sys.exit(1)
+
+        api_key = creds["apiKey"]
+        api_secret = creds["secret"]
+        api_passphrase = creds["passphrase"]
+
+        console.print(f"  API Key:      [green]{api_key[:16]}...[/green]")
+        console.print(f"  API Secret:   [green]{api_secret[:16]}...[/green]")
+        console.print(f"  Passphrase:   [green]{api_passphrase[:16]}...[/green]\n")
+
+        # Write to .env file
+        import re
+
+        if env_path.exists():
+            content = env_path.read_text()
+        else:
+            example = env_path.parent / ".env.example"
+            content = example.read_text() if example.exists() else ""
+
+        updates = {
+            "POLYMARKET_API_KEY": api_key,
+            "POLYMARKET_API_SECRET": api_secret,
+            "POLYMARKET_API_PASSPHRASE": api_passphrase,
+        }
+        for key, value in updates.items():
+            pattern = rf"^{key}=.*$"
+            replacement = f"{key}={value}"
+            if re.search(pattern, content, re.MULTILINE):
+                content = re.sub(pattern, replacement, content, flags=re.MULTILINE)
+            else:
+                content += f"\n{key}={value}\n"
+
+        env_path.write_text(content)
+        console.print(f"Credentials saved to [bold]{env_path}[/bold]")
+        console.print("\nYou can now run the bot:")
+        console.print("  python -m src.main run --dry-run")
+
+    except Exception as e:
+        console.print(f"[red]Error: {e}[/red]")
+        sys.exit(1)
 
 
 @cli.command(name="check-wallets")
