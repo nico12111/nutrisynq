@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "polymarket-copy-trader"
+version = "0.1.0"
+description = "Copy-trading bot for Polymarket based on Polygon wallet monitoring"
+requires-python = ">=3.11"
+dependencies = [
+    "web3>=6.15.0",
+    "py-clob-client>=0.18.0",
+    "python-dotenv>=1.0.0",
+    "pydantic>=2.5.0",
+    "pydantic-settings>=2.1.0",
+    "aiohttp>=3.9.0",
+    "structlog>=24.1.0",
+    "tenacity>=8.2.0",
+    "click>=8.1.0",
+    "rich>=13.7.0",
+    "eth-abi>=5.0.0",
+    "eth-account>=0.11.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-cov>=4.1.0",
+    "ruff>=0.2.0",
+    "mypy>=1.8.0",
+]
+
+[project.scripts]
+copy-trader = "src.main:cli"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "SIM"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
