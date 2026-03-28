@@ -4,13 +4,21 @@ Polymarket Execution Module.
 Handles order placement via the Polymarket CLOB API.
 Supports both live execution and dry-run (paper trading) mode.
 
-Polymarket CLOB API flow:
-1. Authenticate using API key/secret/passphrase
-2. Get current order book for the token
-3. Place a market order or limit order
-4. Monitor order status
+Uses the official py-clob-client SDK:
+  https://github.com/Polymarket/py-clob-client
 
-Uses the py-clob-client library for API interaction.
+Polymarket CLOB API flow:
+1. Authenticate using API key/secret/passphrase (L2 auth via CLOB client)
+2. Get current order book for the token
+3. Create and sign a market order
+4. Submit via post_order with FOK (Fill-Or-Kill) order type
+5. Check response for success/failure
+
+Important notes:
+- The CLOB client uses ethers-style signing (EIP-712) internally
+- Orders are matched off-chain by Polymarket's operator
+- Settlement happens on-chain via the CTF Exchange contracts
+- Market orders use FOK to avoid partial fills hanging
 """
 
 from __future__ import annotations
@@ -23,6 +31,7 @@ from typing import TYPE_CHECKING, Any
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from src.logging_mod.logger import get_logger
+from src.utils.constants import POLYGON_CHAIN_ID
 
 if TYPE_CHECKING:
     from src.config.settings import AppConfig
@@ -69,7 +78,9 @@ class PolymarketExecutor:
     Executes trades on Polymarket via the CLOB API.
 
     In dry-run mode, simulates execution without placing real orders.
-    In live mode, uses py-clob-client to interact with the CLOB.
+    In live mode, uses the official py-clob-client SDK to interact with the CLOB.
+
+    SDK reference: https://github.com/Polymarket/py-clob-client
     """
 
     def __init__(self, config: AppConfig) -> None:
@@ -78,7 +89,19 @@ class PolymarketExecutor:
         self._client: Any = None
 
     async def initialize(self) -> None:
-        """Initialize the CLOB client."""
+        """
+        Initialize the CLOB client.
+
+        The ClobClient constructor:
+          ClobClient(host, chain_id, key, creds)
+        - host: "https://clob.polymarket.com"
+        - chain_id: 137 (Polygon mainnet)
+        - key: private key hex string (with or without 0x prefix)
+        - creds: ApiCreds(api_key, api_secret, api_passphrase)
+
+        API credentials are obtained via the derive_api_key() flow
+        or manually from the Polymarket dashboard.
+        """
         if self.dry_run:
             logger.info("executor_initialized", mode="DRY_RUN")
             return
@@ -95,21 +118,29 @@ class PolymarketExecutor:
 
             self._client = ClobClient(
                 host=self.config.env.polymarket_api_url,
-                chain_id=137,
+                chain_id=POLYGON_CHAIN_ID,
                 key=self.config.env.private_key,
                 creds=creds,
             )
 
             logger.info("executor_initialized", mode="LIVE")
         except ImportError:
-            logger.error("py_clob_client_not_installed")
+            logger.error(
+                "py_clob_client_not_installed",
+                hint="Install with: pip install py-clob-client",
+            )
             raise
         except Exception:
             logger.exception("executor_init_failed")
             raise
 
     async def get_balance(self) -> float:
-        """Get current USDC balance on Polymarket."""
+        """
+        Get current USDC allowance/balance on Polymarket.
+
+        Uses the CLOB client's get_balance_allowance() which returns
+        the USDC balance available for trading.
+        """
         if self.dry_run:
             return 10000.0  # Simulated balance for paper trading
 
@@ -117,16 +148,20 @@ class PolymarketExecutor:
             return 0.0
 
         try:
-            # The CLOB client provides balance info
-            # This may vary based on py-clob-client version
             balance_info = self._client.get_balance_allowance()
+            # Balance is returned in USDC raw units (6 decimals)
             return float(balance_info.get("balance", 0)) / 1e6
         except Exception:
             logger.exception("balance_fetch_failed")
             return 0.0
 
     async def get_market_price(self, token_id: str) -> float:
-        """Get the current best price for a token."""
+        """
+        Get the current mid-market price for a token.
+
+        Fetches the order book and calculates:
+        mid_price = (best_bid + best_ask) / 2
+        """
         if self.dry_run:
             return 0.5  # Simulated mid-price
 
@@ -135,10 +170,18 @@ class PolymarketExecutor:
 
         try:
             book = self._client.get_order_book(token_id)
-            # Calculate mid price from order book
             best_bid = float(book.bids[0].price) if book.bids else 0.0
             best_ask = float(book.asks[0].price) if book.asks else 1.0
-            return (best_bid + best_ask) / 2.0
+            mid = (best_bid + best_ask) / 2.0
+
+            logger.debug(
+                "market_price",
+                token_id=token_id[:16],
+                bid=best_bid,
+                ask=best_ask,
+                mid=mid,
+            )
+            return mid
         except Exception:
             logger.exception("price_fetch_failed", token_id=token_id)
             return 0.0
@@ -147,14 +190,12 @@ class PolymarketExecutor:
         """Execute a buy order."""
         if self.dry_run:
             return self._simulate_execution(decision, is_buy=True)
-
         return await self._place_market_order(decision, side="BUY")
 
     async def execute_sell(self, decision: TradeDecision) -> ExecutionResult:
         """Execute a sell order."""
         if self.dry_run:
             return self._simulate_execution(decision, is_buy=False)
-
         return await self._place_market_order(decision, side="SELL")
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
@@ -162,8 +203,15 @@ class PolymarketExecutor:
         """
         Place a market order via the CLOB API.
 
-        Uses py-clob-client to create and submit the order.
-        Includes retry logic for transient failures.
+        Flow:
+        1. Fetch current market price from order book
+        2. Check slippage against the price the tracked wallet got
+        3. Create a MarketOrderArgs with token_id and amount
+        4. Sign and create the order via client.create_market_order()
+        5. Submit via client.post_order() with FOK (Fill-Or-Kill)
+        6. Return execution result
+
+        Retry logic: 3 attempts with exponential backoff (2s, 4s, 8s)
         """
         if self._client is None:
             return ExecutionResult(
@@ -180,26 +228,40 @@ class PolymarketExecutor:
         try:
             from py_clob_client.clob_types import MarketOrderArgs, OrderType
 
-            # Get current price for slippage check
+            # Get current price and check slippage
             current_price = await self.get_market_price(decision.token_id)
+            original_price = decision.trade.price
 
-            # Calculate size (number of shares to buy/sell)
-            if side == "BUY":
-                size = decision.amount_usd / current_price if current_price > 0 else 0
-                # Slippage: max price we'll pay
-                worst_price = current_price * (1 + decision.max_slippage)
-            else:
-                # For sells, we sell the tokens we hold
-                size = decision.amount_usd / current_price if current_price > 0 else 0
-                worst_price = current_price * (1 - decision.max_slippage)
+            if current_price > 0 and original_price > 0:
+                slippage = abs(current_price - original_price) / original_price
+                if slippage > decision.max_slippage:
+                    msg = (
+                        f"Slippage too high: {slippage:.2%} > {decision.max_slippage:.2%} "
+                        f"(original: {original_price:.4f}, current: {current_price:.4f})"
+                    )
+                    logger.warning("slippage_exceeded", message=msg)
+                    return ExecutionResult(
+                        success=False,
+                        order_id="",
+                        status=OrderStatus.CANCELLED,
+                        filled_amount=0.0,
+                        filled_price=current_price,
+                        fee=0.0,
+                        error=msg,
+                        timestamp=time.time(),
+                    )
 
+            # Create market order
+            # amount is in USDC for buys, in shares for sells
             order_args = MarketOrderArgs(
                 token_id=decision.token_id,
                 amount=decision.amount_usd,
             )
 
-            # Create and submit the order
+            # Sign and create the order
             signed_order = self._client.create_market_order(order_args)
+
+            # Submit with FOK (Fill-Or-Kill) to avoid partial fills
             response = self._client.post_order(signed_order, OrderType.FOK)
 
             order_id = response.get("orderID", "")
@@ -209,8 +271,9 @@ class PolymarketExecutor:
                 "order_placed",
                 order_id=order_id,
                 side=side,
-                token_id=decision.token_id,
+                token_id=decision.token_id[:16],
                 amount=decision.amount_usd,
+                price=current_price,
                 success=success,
             )
 
@@ -220,7 +283,7 @@ class PolymarketExecutor:
                 status=OrderStatus.FILLED if success else OrderStatus.FAILED,
                 filled_amount=decision.amount_usd if success else 0.0,
                 filled_price=current_price,
-                fee=decision.amount_usd * 0.002,  # ~0.2% fee estimate
+                fee=decision.amount_usd * 0.002,  # ~0.2% taker fee estimate
                 error="" if success else response.get("errorMsg", "Unknown error"),
                 timestamp=time.time(),
             )
@@ -239,7 +302,15 @@ class PolymarketExecutor:
             )
 
     def _simulate_execution(self, decision: TradeDecision, is_buy: bool) -> ExecutionResult:
-        """Simulate trade execution for dry-run mode."""
+        """
+        Simulate trade execution for dry-run / paper-trading mode.
+
+        Uses the original trade's price as the simulated fill price.
+        In reality, the fill price would likely be worse due to:
+        - Execution delay (seconds between detection and order)
+        - Order book slippage (market impact of your order)
+        - Front-running (others may detect the same whale trade)
+        """
         simulated_price = decision.trade.price
         simulated_fee = decision.amount_usd * 0.002
 
