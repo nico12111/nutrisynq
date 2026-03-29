@@ -154,7 +154,9 @@ def setup(env_file: str, private_key: str | None) -> None:
         console.print("3. Run: python -m src.main run --dry-run")
 
     except Exception as e:
+        import traceback
         console.print(f"[red]Error: {e}[/red]")
+        console.print(f"[dim]{traceback.format_exc()}[/dim]")
         sys.exit(1)
 
 
