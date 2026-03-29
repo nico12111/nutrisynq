@@ -155,8 +155,13 @@ class PolymarketExecutor:
             return 0.0
 
         try:
-            balance_info = self._client.get_balance_allowance()
-            # Balance is returned in USDC raw units (6 decimals)
+            from py_clob_client.clob_types import BalanceAllowanceParams, AssetType
+
+            params = BalanceAllowanceParams(
+                asset_type=AssetType.COLLATERAL,
+                signature_type=self.config.env.signature_type,
+            )
+            balance_info = self._client.get_balance_allowance(params)
             return float(balance_info.get("balance", 0)) / 1e6
         except Exception:
             logger.exception("balance_fetch_failed")

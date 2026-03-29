@@ -68,7 +68,7 @@ class EnvSettings(BaseSettings):
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 
     # Polygon RPC
-    polygon_rpc_url: str = "https://polygon-rpc.com"
+    polygon_rpc_url: str = "https://polygon-mainnet.g.alchemy.com/v2/demo"
     polygon_rpc_wss: str = ""
 
     # Polymarket CLOB API
