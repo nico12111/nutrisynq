@@ -26,7 +26,7 @@
     "cooldown_after_loss_seconds": 60
   },
   "monitoring": {
-    "poll_interval_seconds": 5,
+    "poll_interval_seconds": 1,
     "block_confirmations": 3,
     "max_block_range": 100
   }
