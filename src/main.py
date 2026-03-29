@@ -105,17 +105,19 @@ def setup(env_file: str, private_key: str | None) -> None:
         )
         wallet_address = client.get_address()
         console.print(f"Wallet: [cyan]{wallet_address}[/cyan]")
-        console.print("Deriving API key...\n")
+        console.print("Deriving API credentials...\n")
 
-        creds = client.derive_api_key()
+        # create_or_derive_api_creds() is the official recommended method.
+        # It creates new credentials if none exist, or derives existing ones.
+        creds = client.create_or_derive_api_creds()
 
-        if not creds or "apiKey" not in creds:
+        if not creds or not creds.api_key:
             console.print(f"[red]Failed to derive credentials: {creds}[/red]")
             sys.exit(1)
 
-        api_key = creds["apiKey"]
-        api_secret = creds["secret"]
-        api_passphrase = creds["passphrase"]
+        api_key = creds.api_key
+        api_secret = creds.api_secret
+        api_passphrase = creds.api_passphrase
 
         console.print(f"  API Key:      [green]{api_key[:16]}...[/green]")
         console.print(f"  API Secret:   [green]{api_secret[:16]}...[/green]")
@@ -145,8 +147,11 @@ def setup(env_file: str, private_key: str | None) -> None:
 
         env_path.write_text(content)
         console.print(f"Credentials saved to [bold]{env_path}[/bold]")
-        console.print("\nYou can now run the bot:")
-        console.print("  python -m src.main run --dry-run")
+        console.print()
+        console.print("[bold]Next steps:[/bold]")
+        console.print("1. Set FUNDER_ADDRESS in .env (your proxy wallet from polymarket.com/settings)")
+        console.print("2. Set SIGNATURE_TYPE in .env (1 = email/Google login, 2 = otherwise)")
+        console.print("3. Run: python -m src.main run --dry-run")
 
     except Exception as e:
         console.print(f"[red]Error: {e}[/red]")

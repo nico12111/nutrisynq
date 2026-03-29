@@ -69,18 +69,18 @@ def derive_credentials(private_key: str, host: str, chain_id: int) -> dict:
     print(f"Chain ID: {chain_id}")
     print()
 
-    # derive_api_key() signs a message and calls the auth endpoint
-    creds = client.derive_api_key()
+    # create_or_derive_api_creds() creates new or derives existing credentials
+    creds = client.create_or_derive_api_creds()
 
-    if not creds or "apiKey" not in creds:
+    if not creds or not creds.api_key:
         print("ERROR: Failed to derive API credentials.")
         print(f"Response: {creds}")
         sys.exit(1)
 
     return {
-        "api_key": creds["apiKey"],
-        "api_secret": creds["secret"],
-        "api_passphrase": creds["passphrase"],
+        "api_key": creds.api_key,
+        "api_secret": creds.api_secret,
+        "api_passphrase": creds.api_passphrase,
     }
 
 

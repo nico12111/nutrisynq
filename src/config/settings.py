@@ -79,6 +79,8 @@ class EnvSettings(BaseSettings):
 
     # Wallet
     private_key: str = ""
+    funder_address: str = ""
+    signature_type: int = 1  # 1 = POLY_PROXY (Magic Link), 2 = GNOSIS_SAFE
 
     # Bot
     dry_run: bool = True

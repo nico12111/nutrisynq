@@ -90,17 +90,17 @@ class PolymarketExecutor:
 
     async def initialize(self) -> None:
         """
-        Initialize the CLOB client.
+        Initialize the CLOB client with full authentication.
 
-        The ClobClient constructor:
-          ClobClient(host, chain_id, key, creds)
+        ClobClient constructor (from official docs):
+          ClobClient(host, chain_id, key, creds, signature_type, funder)
+
         - host: "https://clob.polymarket.com"
         - chain_id: 137 (Polygon mainnet)
-        - key: private key hex string (with or without 0x prefix)
-        - creds: ApiCreds(api_key, api_secret, api_passphrase)
-
-        API credentials are obtained via the derive_api_key() flow
-        or manually from the Polymarket dashboard.
+        - key: private key hex string (the key you exported from Polymarket)
+        - creds: ApiCreds(api_key, api_secret, api_passphrase) from setup
+        - signature_type: 1 = POLY_PROXY (Magic Link login), 2 = GNOSIS_SAFE
+        - funder: your proxy wallet address shown on polymarket.com/settings
         """
         if self.dry_run:
             logger.info("executor_initialized", mode="DRY_RUN")
@@ -121,9 +121,16 @@ class PolymarketExecutor:
                 chain_id=POLYGON_CHAIN_ID,
                 key=self.config.env.private_key,
                 creds=creds,
+                signature_type=self.config.env.signature_type,
+                funder=self.config.env.funder_address or None,
             )
 
-            logger.info("executor_initialized", mode="LIVE")
+            logger.info(
+                "executor_initialized",
+                mode="LIVE",
+                signature_type=self.config.env.signature_type,
+                funder=self.config.env.funder_address[:10] + "..." if self.config.env.funder_address else "none",
+            )
         except ImportError:
             logger.error(
                 "py_clob_client_not_installed",
