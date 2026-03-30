@@ -272,28 +272,10 @@ class PolymarketExecutor:
         try:
             from py_clob_client.clob_types import MarketOrderArgs, OrderType
 
-            # Get current price and check slippage
+            # Get current price for logging
             current_price = await self.get_market_price(decision.token_id)
-            original_price = decision.trade.price
-
-            if current_price > 0 and original_price > 0:
-                slippage = abs(current_price - original_price) / original_price
-                if slippage > decision.max_slippage:
-                    msg = (
-                        f"Slippage too high: {slippage:.2%} > {decision.max_slippage:.2%} "
-                        f"(original: {original_price:.4f}, current: {current_price:.4f})"
-                    )
-                    logger.warning("slippage_exceeded", message=msg)
-                    return ExecutionResult(
-                        success=False,
-                        order_id="",
-                        status=OrderStatus.CANCELLED,
-                        filled_amount=0.0,
-                        filled_price=current_price,
-                        fee=0.0,
-                        error=msg,
-                        timestamp=time.time(),
-                    )
+            if current_price <= 0:
+                current_price = decision.trade.price
 
             # Create market order
             # amount is in USDC for buys, in shares for sells

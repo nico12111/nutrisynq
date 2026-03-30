@@ -123,14 +123,21 @@ class MarketResolver:
                     return None
 
                 market = data[0]
+                outcome = self._resolve_outcome(market, token_id)
                 result = {
                     "condition_id": market.get("condition_id", ""),
                     "question": market.get("question", "Unknown Market"),
                     "slug": market.get("slug", ""),
-                    "outcome": self._resolve_outcome(market, token_id),
+                    "outcome": outcome,
                     "tokens": market.get("tokens", []),
                 }
                 self._cache[token_id] = result
+                logger.debug(
+                    "market_resolved",
+                    token_id=str(token_id)[:20],
+                    question=result["question"][:50],
+                    outcome=outcome,
+                )
                 return result
 
         except Exception:
@@ -140,21 +147,44 @@ class MarketResolver:
     @staticmethod
     def _resolve_outcome(market: dict[str, Any], token_id: str) -> str:
         """Determine which outcome (Yes/No) the token_id represents."""
+        tid = str(token_id)
+
+        # Method 1: tokens array with token_id field
         tokens = market.get("tokens", [])
         for token in tokens:
-            api_token_id = str(token.get("token_id", ""))
-            if api_token_id == str(token_id):
+            if str(token.get("token_id", "")) == tid:
                 return token.get("outcome", "Unknown")
-        # Fallback: check clobTokenIds field on the market itself
-        clob_ids = market.get("clobTokenIds", market.get("clob_token_ids", ""))
-        if isinstance(clob_ids, str) and str(token_id) in clob_ids:
-            # Single-outcome market or first match
-            if tokens:
-                return tokens[0].get("outcome", "Unknown")
+
+        # Method 2: clobTokenIds is a comma-separated string or JSON array,
+        # outcomes is a corresponding comma-separated string or JSON array.
+        # Example: clobTokenIds="123,456", outcomes="Yes,No"
+        clob_ids_raw = market.get("clobTokenIds", market.get("clob_token_ids", ""))
+        outcomes_raw = market.get("outcomes", "")
+
+        if isinstance(clob_ids_raw, str) and isinstance(outcomes_raw, str):
+            # Parse as JSON arrays (e.g., '["123","456"]') or comma-separated
+            import json
+            try:
+                clob_ids = json.loads(clob_ids_raw) if clob_ids_raw.startswith("[") else clob_ids_raw.split(",")
+                outcomes = json.loads(outcomes_raw) if outcomes_raw.startswith("[") else outcomes_raw.split(",")
+            except (json.JSONDecodeError, ValueError):
+                clob_ids = []
+                outcomes = []
+
+            for i, cid in enumerate(clob_ids):
+                if str(cid).strip() == tid and i < len(outcomes):
+                    return str(outcomes[i]).strip()
+        elif isinstance(clob_ids_raw, list) and isinstance(outcomes_raw, list):
+            for i, cid in enumerate(clob_ids_raw):
+                if str(cid) == tid and i < len(outcomes_raw):
+                    return str(outcomes_raw[i])
+
         logger.debug(
             "outcome_not_matched",
-            token_id=str(token_id)[:20],
+            token_id=tid[:20],
             api_tokens=[str(t.get("token_id", ""))[:20] for t in tokens],
+            clob_ids=str(clob_ids_raw)[:60],
+            outcomes=str(outcomes_raw)[:60],
         )
         return "Unknown"
 

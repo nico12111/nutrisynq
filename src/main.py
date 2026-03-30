@@ -43,7 +43,7 @@ def run(config: str, dry_run: bool) -> None:
     console.print(f"Dry Run: {app_config.is_dry_run}\n")
 
     try:
-        asyncio.run(run_bot(config))
+        asyncio.run(run_bot(app_config))
     except KeyboardInterrupt:
         console.print("\n[yellow]Bot stopped by user.[/yellow]")
         sys.exit(0)

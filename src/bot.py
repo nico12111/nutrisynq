@@ -243,9 +243,12 @@ class CopyTradingBot:
         console.print(table)
 
 
-async def run_bot(config_path: str = "config.json") -> None:
+async def run_bot(config_or_path: str | AppConfig = "config.json") -> None:
     """Entry point to run the bot."""
-    config = load_config(config_path)
+    if isinstance(config_or_path, str):
+        config = load_config(config_or_path)
+    else:
+        config = config_or_path
     setup_logging(config.env.log_level, config.env.log_file)
 
     bot = CopyTradingBot(config)
