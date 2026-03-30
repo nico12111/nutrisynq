@@ -294,7 +294,7 @@ def test_auth(config: str) -> None:
     # Step 3: Test order signing (dry - don't actually post)
     console.print("\n[bold]Step 3: Test order signing[/bold]")
     try:
-        from py_clob_client.clob_types import MarketOrderArgs
+        from py_clob_client.clob_types import OrderArgs
 
         # Find an active market with tokens via CLOB client
         console.print("  Fetching active markets via CLOB API...")
@@ -338,14 +338,15 @@ def test_auth(config: str) -> None:
                 console.print(f"  Test market: '{question}'")
                 console.print(f"  Test token:  {test_token_id[:30]}...")
 
-                # Try to create (sign) a market order without posting
-                order_args = MarketOrderArgs(
+                # Try to create (sign) a limit order - doesn't need order book
+                order_args = OrderArgs(
                     token_id=test_token_id,
-                    amount=0.01,
+                    price=0.01,
+                    size=1.0,
                     side="BUY",
                 )
-                signed_order = client.create_market_order(order_args)
-                console.print(f"  create_market_order(): [green]OK - order signed successfully[/green]")
+                signed_order = client.create_order(order_args)
+                console.print(f"  create_order(): [green]OK - order signed successfully[/green]")
 
                 # Now try to actually post (tiny amount, will likely fail due to min size, but not signature)
                 console.print("\n[bold]Step 4: Test order posting (tiny $0.01 order)[/bold]")
