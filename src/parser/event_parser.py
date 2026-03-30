@@ -503,6 +503,13 @@ class EventParser:
         topics = log.get("topics", [])
         data = log.get("data", b"")
 
+        logger.info(
+            "orders_matched_contract",
+            contract=raw.contract_address,
+            neg_risk_addr=NEG_RISK_CTF_EXCHANGE_ADDRESS.lower(),
+            is_neg_risk=(raw.contract_address.lower() == NEG_RISK_CTF_EXCHANGE_ADDRESS.lower()),
+        )
+
         if isinstance(data, str):
             data = bytes.fromhex(data[2:] if data.startswith("0x") else data)
 
