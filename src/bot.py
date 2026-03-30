@@ -57,6 +57,7 @@ class CopyTradingBot:
         self._running = False
         self._single_trade_mode = config.trading.single_trade_mode
         self._single_trade_token: str | None = None  # token we bought
+        self._single_trade_condition: str | None = None  # condition_id of our market
         self._single_trade_done = False
         self._stats = {
             "events_detected": 0,
@@ -168,12 +169,43 @@ class CopyTradingBot:
                             console.print("  [dim]Waiting for first BUY, skipping SELL.[/dim]")
                             continue
                     else:
-                        # We have an open position — only accept SELL of same token
-                        if parsed_trade.direction != TradeDirection.SELL:
-                            console.print("  [dim]Position open, skipping new BUY.[/dim]")
-                            continue
-                        if parsed_trade.token_id != self._single_trade_token:
-                            console.print("  [dim]SELL for different token, skipping.[/dim]")
+                        # We have an open position — accept SELL of same token,
+                        # OR a BUY of a DIFFERENT token on the SAME market
+                        # (neg-risk close = swap Up→Down, appears as BUY Down).
+                        is_sell_same_token = (
+                            parsed_trade.direction == TradeDirection.SELL
+                            and parsed_trade.token_id == self._single_trade_token
+                        )
+                        is_close_via_complement = (
+                            parsed_trade.direction == TradeDirection.BUY
+                            and parsed_trade.token_id != self._single_trade_token
+                            and self._single_trade_condition
+                            and parsed_trade.condition_id == self._single_trade_condition
+                        )
+                        if is_sell_same_token or is_close_via_complement:
+                            # Force direction to SELL for the copy trade
+                            console.print(
+                                f"  [yellow]Position close detected "
+                                f"({'direct sell' if is_sell_same_token else 'complement swap'})[/yellow]"
+                            )
+                            parsed_trade = ParsedTrade(
+                                wallet_address=parsed_trade.wallet_address,
+                                wallet_label=parsed_trade.wallet_label,
+                                direction=TradeDirection.SELL,
+                                token_id=self._single_trade_token,
+                                condition_id=parsed_trade.condition_id,
+                                market_slug=parsed_trade.market_slug,
+                                market_question=parsed_trade.market_question,
+                                outcome=parsed_trade.outcome,
+                                amount_usdc=parsed_trade.amount_usdc,
+                                amount_tokens=parsed_trade.amount_tokens,
+                                price=parsed_trade.price,
+                                tx_hash=parsed_trade.tx_hash,
+                                block_number=parsed_trade.block_number,
+                                timestamp=parsed_trade.timestamp,
+                            )
+                        else:
+                            console.print("  [dim]Position open, skipping unrelated trade.[/dim]")
                             continue
 
                 # Make decision
@@ -207,6 +239,7 @@ class CopyTradingBot:
                     if self._single_trade_mode:
                         if decision.action == DecisionAction.EXECUTE_BUY:
                             self._single_trade_token = parsed_trade.token_id
+                            self._single_trade_condition = parsed_trade.condition_id
                             console.print(
                                 f"\n[bold yellow]Single-trade mode: Position opened on "
                                 f"'{parsed_trade.market_question}' ({parsed_trade.outcome}). "

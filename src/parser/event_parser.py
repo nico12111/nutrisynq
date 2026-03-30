@@ -347,15 +347,28 @@ class EventParser:
                 amount_tokens = taker_amount / (10**USDC_DECIMALS)
                 amount_usdc = maker_amount / (10**USDC_DECIMALS)
             elif maker_market and taker_market:
-                # Both resolve (e.g. Yes vs No on same market).
-                # Use makerAssetId as reference; maker sends it → SELL.
-                token_id = str(maker_asset_id)
+                # Both resolve (e.g. Up vs Down on same neg-risk market).
+                # Both are valid outcome tokens. Direction = what wallet RECEIVES.
+                # Maker sends makerAssetId, receives takerAssetId.
+                # Taker sends takerAssetId, receives makerAssetId.
                 if is_maker:
-                    direction = TradeDirection.SELL
-                else:
+                    # Wallet is maker → receives takerAssetId → BUY takerAssetId
+                    token_id = str(taker_asset_id)
                     direction = TradeDirection.BUY
-                amount_tokens = maker_amount / (10**USDC_DECIMALS)
-                amount_usdc = taker_amount / (10**USDC_DECIMALS)
+                    amount_tokens = taker_amount / (10**USDC_DECIMALS)
+                    amount_usdc = maker_amount / (10**USDC_DECIMALS)
+                else:
+                    # Wallet is taker → receives makerAssetId → BUY makerAssetId
+                    token_id = str(maker_asset_id)
+                    direction = TradeDirection.BUY
+                    amount_tokens = maker_amount / (10**USDC_DECIMALS)
+                    amount_usdc = taker_amount / (10**USDC_DECIMALS)
+                logger.info(
+                    "both_tokens_resolve_direction",
+                    is_maker=is_maker,
+                    received_token=token_id[:20],
+                    direction=direction.value,
+                )
             else:
                 # Neither resolves — cannot determine trade direction
                 logger.warning(
