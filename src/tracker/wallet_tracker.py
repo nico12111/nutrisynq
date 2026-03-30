@@ -69,6 +69,7 @@ class WalletTracker:
         self.watched_addresses: set[str] = set()
         self.last_processed_block: int = 0
         self._running = False
+        self._timestamp_cache: dict[int, int] = {}  # block_number -> timestamp
 
         # Exchange contracts to monitor
         self.exchange_contracts = [
@@ -168,10 +169,18 @@ class WalletTracker:
         return None
 
     async def _get_block_timestamp(self, block_number: int) -> int:
-        """Get timestamp for a block."""
+        """Get timestamp for a block (cached)."""
+        if block_number in self._timestamp_cache:
+            return self._timestamp_cache[block_number]
         try:
             block = await self.w3.eth.get_block(block_number)
-            return block["timestamp"]
+            ts = block["timestamp"]
+            self._timestamp_cache[block_number] = ts
+            # Keep cache small — remove old entries
+            if len(self._timestamp_cache) > 100:
+                oldest = min(self._timestamp_cache)
+                del self._timestamp_cache[oldest]
+            return ts
         except Exception:
             return 0
 
