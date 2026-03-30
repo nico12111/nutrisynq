@@ -84,10 +84,11 @@ class DecisionEngine:
         if trade.direction == TradeDirection.SELL and not wallet_config.copy_sells:
             return self._skip(trade, "Sell copying disabled for this wallet")
 
-        # For sells, check if we have a position to sell
+        # For sells, log if we don't have a position but still allow
+        # (in copy-trading, we may want to enter short or the buy was missed)
         if trade.direction == TradeDirection.SELL:
             if trade.token_id not in self.risk_manager.state.positions:
-                return self._skip(trade, "No open position to sell")
+                logger.info("sell_without_position", token_id=trade.token_id[:16])
 
         # Calculate trade amount
         amount_usd = self._calculate_amount(trade)

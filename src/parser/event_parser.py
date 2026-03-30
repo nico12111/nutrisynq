@@ -217,34 +217,81 @@ class EventParser:
         wallet_addr = raw.matched_wallet.address.lower()
         is_maker = maker_addr.lower() == wallet_addr
 
-        # Determine direction and amounts
-        if is_maker:
-            if maker_asset_id == 0:
-                # Maker sends USDC (asset 0), receives tokens -> BUY
+        logger.debug(
+            "order_filled_raw",
+            tx=raw.tx_hash[:16],
+            maker=maker_addr[:10],
+            taker=taker_addr[:10],
+            wallet_is_maker=is_maker,
+            maker_asset_id=str(maker_asset_id)[:20],
+            taker_asset_id=str(taker_asset_id)[:20],
+            maker_amount=maker_amount,
+            taker_amount=taker_amount,
+            fee=fee,
+        )
+
+        # Determine direction and amounts.
+        #
+        # In Polymarket's CTF Exchange, the OrderFilled event works as:
+        # - The MAKER placed a limit order. makerAssetId is the token they offer.
+        # - The TAKER fills against it. takerAssetId is the token they offer.
+        # - One side offers outcome tokens, the other side "pays" in USDC
+        #   represented as the complementary position or amount.
+        #
+        # Key insight: In Polymarket CLOB, when matching a BUY order with
+        # a SELL order, the amounts represent:
+        # - makerAmountFilled = what the maker gave
+        # - takerAmountFilled = what the taker gave
+        #
+        # For the tracked wallet, we determine buy/sell by looking at
+        # which side has the larger asset ID (outcome token) vs smaller.
+        # The side with the outcome token is SELLING it, the other is BUYING.
+        #
+        # If both assetIds are non-zero (both are outcome tokens),
+        # we compare amounts to determine who is buying:
+        # - The side that gave MORE (in raw units) is the buyer (paying USDC-equivalent)
+        # - The side that gave LESS is the seller (giving tokens at a premium)
+
+        if maker_asset_id == 0:
+            # Maker sends USDC, receives tokens -> maker is BUYING
+            if is_maker:
                 direction = TradeDirection.BUY
                 token_id = str(taker_asset_id)
-                amount_usdc = taker_amount / (10**USDC_DECIMALS)
-                amount_tokens = maker_amount / (10**USDC_DECIMALS)
             else:
-                # Maker sends tokens, receives USDC -> SELL
+                direction = TradeDirection.SELL
+                token_id = str(taker_asset_id)
+            amount_usdc = maker_amount / (10**USDC_DECIMALS)
+            amount_tokens = taker_amount / (10**USDC_DECIMALS)
+        elif taker_asset_id == 0:
+            # Taker sends USDC, receives tokens -> taker is BUYING
+            if is_maker:
                 direction = TradeDirection.SELL
                 token_id = str(maker_asset_id)
-                amount_tokens = maker_amount / (10**USDC_DECIMALS)
-                amount_usdc = taker_amount / (10**USDC_DECIMALS)
+            else:
+                direction = TradeDirection.BUY
+                token_id = str(maker_asset_id)
+            amount_usdc = taker_amount / (10**USDC_DECIMALS)
+            amount_tokens = maker_amount / (10**USDC_DECIMALS)
         else:
-            # Wallet is the taker
-            if taker_asset_id == 0:
-                # Taker sends USDC, receives tokens -> BUY
+            # Both assetIds are non-zero: both are outcome tokens.
+            # This happens in Polymarket's CTF Exchange where trades
+            # are between complementary outcome tokens.
+            #
+            # The maker's order defines the trade direction:
+            # - Maker SELLS makerAssetId and BUYS takerAssetId
+            # - Taker BUYS makerAssetId and SELLS takerAssetId
+            if is_maker:
+                # Maker is selling makerAssetId
+                direction = TradeDirection.SELL
+                token_id = str(maker_asset_id)
+                amount_tokens = maker_amount / (10**USDC_DECIMALS)
+                amount_usdc = taker_amount / (10**USDC_DECIMALS)
+            else:
+                # Taker is buying makerAssetId (receiving it)
                 direction = TradeDirection.BUY
                 token_id = str(maker_asset_id)
-                amount_usdc = maker_amount / (10**USDC_DECIMALS)
-                amount_tokens = taker_amount / (10**USDC_DECIMALS)
-            else:
-                # Taker sends tokens, receives USDC -> SELL
-                direction = TradeDirection.SELL
-                token_id = str(taker_asset_id)
-                amount_tokens = taker_amount / (10**USDC_DECIMALS)
-                amount_usdc = maker_amount / (10**USDC_DECIMALS)
+                amount_tokens = maker_amount / (10**USDC_DECIMALS)
+                amount_usdc = taker_amount / (10**USDC_DECIMALS)
 
         # Calculate approximate price
         price = amount_usdc / amount_tokens if amount_tokens > 0 else 0.0
