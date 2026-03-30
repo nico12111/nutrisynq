@@ -143,28 +143,60 @@ class PolymarketExecutor:
 
     async def get_balance(self) -> float:
         """
-        Get current USDC allowance/balance on Polymarket.
+        Get current USDC balance.
 
-        Uses the CLOB client's get_balance_allowance() which returns
-        the USDC balance available for trading.
+        First tries the CLOB API, falls back to querying the on-chain
+        USDC.e balance of the funder (proxy wallet) address directly.
         """
         if self.dry_run:
             return 10000.0  # Simulated balance for paper trading
 
-        if self._client is None:
+        # Try CLOB API first
+        if self._client is not None:
+            try:
+                from py_clob_client.clob_types import AssetType, BalanceAllowanceParams
+
+                params = BalanceAllowanceParams(
+                    asset_type=AssetType.COLLATERAL,
+                    signature_type=self.config.env.signature_type,
+                )
+                balance_info = self._client.get_balance_allowance(params)
+                api_balance = float(balance_info.get("balance", 0)) / 1e6
+                if api_balance > 0:
+                    return api_balance
+            except Exception:
+                logger.debug("clob_balance_failed_trying_onchain")
+
+        # Fallback: query on-chain USDC.e balance of funder address
+        funder = self.config.env.funder_address
+        if not funder:
             return 0.0
 
         try:
-            from py_clob_client.clob_types import BalanceAllowanceParams, AssetType
+            from web3 import Web3
 
-            params = BalanceAllowanceParams(
-                asset_type=AssetType.COLLATERAL,
-                signature_type=self.config.env.signature_type,
+            w3 = Web3(Web3.HTTPProvider(self.config.env.polygon_rpc_url))
+            usdc_address = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
+            erc20_abi = [
+                {
+                    "inputs": [{"name": "account", "type": "address"}],
+                    "name": "balanceOf",
+                    "outputs": [{"name": "", "type": "uint256"}],
+                    "stateMutability": "view",
+                    "type": "function",
+                }
+            ]
+            usdc = w3.eth.contract(
+                address=Web3.to_checksum_address(usdc_address), abi=erc20_abi
             )
-            balance_info = self._client.get_balance_allowance(params)
-            return float(balance_info.get("balance", 0)) / 1e6
+            raw_balance = usdc.functions.balanceOf(
+                Web3.to_checksum_address(funder)
+            ).call()
+            balance = raw_balance / 1e6
+            logger.info("onchain_balance", funder=funder[:10], balance_usd=balance)
+            return balance
         except Exception:
-            logger.exception("balance_fetch_failed")
+            logger.exception("onchain_balance_failed")
             return 0.0
 
     async def get_market_price(self, token_id: str) -> float:
