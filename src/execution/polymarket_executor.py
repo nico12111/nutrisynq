@@ -282,6 +282,7 @@ class PolymarketExecutor:
             order_args = MarketOrderArgs(
                 token_id=decision.token_id,
                 amount=decision.amount_usd,
+                side=side,
             )
 
             # Sign and create the order
