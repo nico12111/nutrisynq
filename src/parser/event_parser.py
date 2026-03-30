@@ -455,18 +455,21 @@ class EventParser:
             taker_amount=taker_amount,
         )
 
-        # For OrdersMatched, the tracked wallet is the takerOrderMaker.
-        # The taker sends takerAssetId and receives makerAssetId.
+        # For OrdersMatched on the Neg Risk CTF Exchange:
+        # makerAssetId/takerAssetId = what each side RECEIVES (not sends).
+        # makerAmountFilled/takerAmountFilled = how much each side receives.
+        # The wallet is the takerOrderMaker (taker).
         if maker_asset_id == 0:
-            # makerAssetId=0 means USDC side → taker receives USDC → SELL
-            direction = TradeDirection.SELL
+            # Maker receives USDC → maker is selling tokens.
+            # Taker (wallet) receives tokens → wallet is BUYING.
+            direction = TradeDirection.BUY
             token_id = str(taker_asset_id)
             amount_tokens = taker_amount / (10**USDC_DECIMALS)
             amount_usdc = maker_amount / (10**USDC_DECIMALS)
             logger.info("branch_hit_matched", branch="maker_asset_zero", direction=direction.value)
         elif taker_asset_id == 0:
-            # takerAssetId=0 means taker sends USDC → BUY
-            direction = TradeDirection.BUY
+            # Taker (wallet) receives USDC → wallet is SELLING tokens.
+            direction = TradeDirection.SELL
             token_id = str(maker_asset_id)
             amount_usdc = taker_amount / (10**USDC_DECIMALS)
             amount_tokens = maker_amount / (10**USDC_DECIMALS)
@@ -477,23 +480,23 @@ class EventParser:
             taker_market = await self.market_resolver.resolve_token(str(taker_asset_id))
 
             if maker_market and not taker_market:
-                # Taker receives makerAssetId (the outcome token) → BUY
+                # Maker receives makerAssetId (outcome token) → wallet sold it → SELL
                 token_id = str(maker_asset_id)
-                direction = TradeDirection.BUY
+                direction = TradeDirection.SELL
                 amount_tokens = maker_amount / (10**USDC_DECIMALS)
                 amount_usdc = taker_amount / (10**USDC_DECIMALS)
             elif taker_market and not maker_market:
-                # Taker sends takerAssetId (the outcome token) → SELL
+                # Wallet receives takerAssetId (outcome token) → BUY
                 token_id = str(taker_asset_id)
-                direction = TradeDirection.SELL
+                direction = TradeDirection.BUY
                 amount_tokens = taker_amount / (10**USDC_DECIMALS)
                 amount_usdc = maker_amount / (10**USDC_DECIMALS)
             elif maker_market and taker_market:
-                # Both resolve — taker receives makerAssetId
-                token_id = str(maker_asset_id)
+                # Both resolve — wallet receives takerAssetId → BUY
+                token_id = str(taker_asset_id)
                 direction = TradeDirection.BUY
-                amount_tokens = maker_amount / (10**USDC_DECIMALS)
-                amount_usdc = taker_amount / (10**USDC_DECIMALS)
+                amount_tokens = taker_amount / (10**USDC_DECIMALS)
+                amount_usdc = maker_amount / (10**USDC_DECIMALS)
             else:
                 logger.warning(
                     "neither_token_resolves",
