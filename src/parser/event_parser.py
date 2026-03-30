@@ -101,47 +101,74 @@ class MarketResolver:
         """
         Resolve a CTF token ID to market info.
 
-        Uses the Gamma API: GET /markets?clob_token_ids={token_id}
-        Returns market question, slug, condition_id, outcome labels.
+        Tries two strategies:
+        1. GET /markets?clob_token_ids={token_id} (works for CLOB token IDs)
+        2. GET /markets?asset_id={token_id} (works for on-chain Neg Risk token IDs)
+
+        Returns market question, slug, condition_id, outcome labels, and clob_token_id.
         """
         if token_id in self._cache:
             return self._cache[token_id]
 
         session = await self._get_session()
         url = f"{GAMMA_API_BASE}/markets"
-        params = {"clob_token_ids": token_id}
+        market = None
 
         try:
-            async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                if resp.status != 200:
-                    logger.warning("gamma_api_error", status=resp.status, token_id=token_id)
-                    return None
+            # Strategy 1: try as CLOB token ID
+            async with session.get(
+                url, params={"clob_token_ids": token_id},
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    if data:
+                        market = data[0]
 
-                data = await resp.json()
-                if not data:
-                    logger.warning("market_not_found", token_id=token_id)
-                    return None
+            # Strategy 2: try as on-chain asset ID (for Neg Risk Exchange)
+            if market is None:
+                async with session.get(
+                    url, params={"asset_id": token_id},
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        if data:
+                            market = data[0]
+                            logger.info(
+                                "resolved_via_asset_id",
+                                onchain_id=str(token_id)[:20],
+                                question=market.get("question", "")[:50],
+                                tokens_count=len(market.get("tokens", [])),
+                                token_keys=list(market.get("tokens", [{}])[0].keys()) if market.get("tokens") else [],
+                            )
 
-                market = data[0]
-                outcome = self._resolve_outcome(market, token_id)
-                result = {
-                    "condition_id": market.get("condition_id", ""),
-                    "question": market.get("question", "Unknown Market"),
-                    "slug": market.get("slug", ""),
-                    "outcome": outcome,
-                    "tokens": market.get("tokens", []),
-                }
-                self._cache[token_id] = result
-                logger.debug(
-                    "market_resolved",
-                    token_id=str(token_id)[:20],
-                    question=result["question"][:50],
-                    outcome=outcome,
-                )
-                return result
+            if market is None:
+                logger.warning("market_not_found", token_id=str(token_id)[:30])
+                return None
+
+            outcome = self._resolve_outcome(market, token_id)
+            clob_token_id = self._find_clob_token_id(market, token_id, outcome)
+            result = {
+                "condition_id": market.get("condition_id", ""),
+                "question": market.get("question", "Unknown Market"),
+                "slug": market.get("slug", ""),
+                "outcome": outcome,
+                "tokens": market.get("tokens", []),
+                "clob_token_id": clob_token_id,
+            }
+            self._cache[token_id] = result
+            logger.debug(
+                "market_resolved",
+                token_id=str(token_id)[:20],
+                clob_token_id=str(clob_token_id)[:20] if clob_token_id else "none",
+                question=result["question"][:50],
+                outcome=outcome,
+            )
+            return result
 
         except Exception:
-            logger.exception("market_resolution_failed", token_id=token_id)
+            logger.exception("market_resolution_failed", token_id=str(token_id)[:30])
             return None
 
     @staticmethod
@@ -179,7 +206,7 @@ class MarketResolver:
                 if str(cid) == tid and i < len(outcomes_raw):
                     return str(outcomes_raw[i])
 
-        logger.debug(
+        logger.info(
             "outcome_not_matched",
             token_id=tid[:20],
             api_tokens=[str(t.get("token_id", ""))[:20] for t in tokens],
@@ -187,6 +214,39 @@ class MarketResolver:
             outcomes=str(outcomes_raw)[:60],
         )
         return "Unknown"
+
+    @staticmethod
+    def _find_clob_token_id(market: dict[str, Any], onchain_token_id: str, outcome: str) -> str | None:
+        """
+        Extract the CLOB token ID from the Gamma API market response.
+
+        The on-chain token ID (from Neg Risk Exchange) is a 77+ digit uint256
+        that differs from the CLOB API token ID. The Gamma API response contains
+        a 'tokens' array where each entry has 'token_id' (= CLOB token ID) and
+        'outcome' (e.g. "Up", "Down", "Yes", "No").
+
+        We match by outcome label to find the correct CLOB token ID.
+        """
+        tokens = market.get("tokens", [])
+
+        # Match by outcome label
+        if outcome and outcome != "Unknown":
+            for token in tokens:
+                if token.get("outcome", "").lower() == outcome.lower():
+                    clob_id = token.get("token_id", "")
+                    if clob_id:
+                        return clob_id
+
+        # Fallback: if on-chain ID happens to match a token_id directly
+        for token in tokens:
+            if str(token.get("token_id", "")) == onchain_token_id:
+                return onchain_token_id
+
+        # Last resort: return first token if only one exists
+        if len(tokens) == 1:
+            return tokens[0].get("token_id", None)
+
+        return None
 
     async def close(self) -> None:
         if self._session and not self._session.closed:
@@ -393,11 +453,21 @@ class EventParser:
         market_slug = market_info["slug"] if market_info else ""
         outcome = market_info["outcome"] if market_info else "Unknown"
 
+        # Use CLOB token ID for order placement (on-chain ID differs on Neg Risk Exchange)
+        clob_token_id = market_info.get("clob_token_id") if market_info else None
+        effective_token_id = clob_token_id or token_id
+        if clob_token_id and clob_token_id != token_id:
+            logger.info(
+                "using_clob_token_id",
+                onchain_id=token_id[:20],
+                clob_id=clob_token_id[:20],
+            )
+
         trade = ParsedTrade(
             wallet_address=wallet_addr,
             wallet_label=raw.matched_wallet.label or wallet_addr[:10],
             direction=direction,
-            token_id=token_id,
+            token_id=effective_token_id,
             condition_id=condition_id,
             market_slug=market_slug,
             market_question=market_question,
@@ -514,11 +584,21 @@ class EventParser:
         market_slug = market_info["slug"] if market_info else ""
         outcome = market_info["outcome"] if market_info else "Unknown"
 
+        # Use CLOB token ID for order placement (on-chain ID differs on Neg Risk Exchange)
+        clob_token_id = market_info.get("clob_token_id") if market_info else None
+        effective_token_id = clob_token_id or token_id
+        if clob_token_id and clob_token_id != token_id:
+            logger.info(
+                "using_clob_token_id",
+                onchain_id=token_id[:20],
+                clob_id=clob_token_id[:20],
+            )
+
         trade = ParsedTrade(
             wallet_address=wallet_addr,
             wallet_label=raw.matched_wallet.label or wallet_addr[:10],
             direction=direction,
-            token_id=token_id,
+            token_id=effective_token_id,
             condition_id=condition_id,
             market_slug=market_slug,
             market_question=market_question,
