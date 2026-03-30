@@ -14,9 +14,11 @@ Detection approach:
 from __future__ import annotations
 
 import asyncio
+import ssl
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+import certifi
 from web3 import AsyncHTTPProvider, AsyncWeb3
 from web3.types import FilterParams, LogReceipt
 
@@ -57,7 +59,13 @@ class WalletTracker:
 
     def __init__(self, config: AppConfig) -> None:
         self.config = config
-        self.w3 = AsyncWeb3(AsyncHTTPProvider(config.env.polygon_rpc_url))
+        ssl_ctx = ssl.create_default_context(cafile=certifi.where())
+        self.w3 = AsyncWeb3(
+            AsyncHTTPProvider(
+                config.env.polygon_rpc_url,
+                request_kwargs={"ssl": ssl_ctx},
+            )
+        )
         self.watched_addresses: set[str] = set()
         self.last_processed_block: int = 0
         self._running = False

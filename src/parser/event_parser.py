@@ -21,11 +21,13 @@ Detection logic:
 from __future__ import annotations
 
 import asyncio
+import ssl
 from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
 import aiohttp
+import certifi
 from eth_abi import decode
 from web3 import Web3
 
@@ -89,7 +91,10 @@ class MarketResolver:
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
-            self._session = aiohttp.ClientSession()
+            ssl_ctx = ssl.create_default_context(cafile=certifi.where())
+            self._session = aiohttp.ClientSession(
+                connector=aiohttp.TCPConnector(ssl=ssl_ctx)
+            )
         return self._session
 
     async def resolve_token(self, token_id: str) -> dict[str, Any] | None:
