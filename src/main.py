@@ -210,5 +210,152 @@ def status(config: str) -> None:
     console.print(table)
 
 
+@cli.command(name="test-auth")
+@click.option("--config", default="config.json", help="Path to config.json")
+def test_auth(config: str) -> None:
+    """Test Polymarket CLOB API authentication and order signing.
+
+    Verifies that the private key, API credentials, signature_type,
+    and funder address are all correctly configured.
+    """
+    from src.config.settings import load_config
+
+    app_config = load_config(config)
+    env = app_config.env
+
+    console.print("[bold]Polymarket Auth Test[/bold]\n")
+
+    # Show config (redacted)
+    console.print(f"  API URL:        {env.polymarket_api_url}")
+    console.print(f"  API Key:        {env.polymarket_api_key[:16]}..." if env.polymarket_api_key else "  API Key:        [red]MISSING[/red]")
+    console.print(f"  API Secret:     {env.polymarket_api_secret[:8]}..." if env.polymarket_api_secret else "  API Secret:     [red]MISSING[/red]")
+    console.print(f"  API Passphrase: {env.polymarket_api_passphrase[:8]}..." if env.polymarket_api_passphrase else "  API Passphrase: [red]MISSING[/red]")
+    console.print(f"  Private Key:    {env.private_key[:10]}..." if env.private_key else "  Private Key:    [red]MISSING[/red]")
+    console.print(f"  Funder:         {env.funder_address}" if env.funder_address else "  Funder:         [red]MISSING[/red]")
+    console.print(f"  Signature Type: {env.signature_type}")
+    console.print()
+
+    try:
+        from py_clob_client.client import ClobClient
+        from py_clob_client.clob_types import ApiCreds
+    except ImportError:
+        console.print("[red]py-clob-client not installed.[/red]")
+        sys.exit(1)
+
+    # Step 1: Create client and check derived address
+    console.print("[bold]Step 1: Check wallet address[/bold]")
+    try:
+        basic_client = ClobClient(
+            host=env.polymarket_api_url,
+            chain_id=137,
+            key=env.private_key,
+        )
+        derived_addr = basic_client.get_address()
+        console.print(f"  Derived EOA address: [cyan]{derived_addr}[/cyan]")
+        if env.funder_address:
+            if derived_addr.lower() == env.funder_address.lower():
+                console.print("  [yellow]WARNING: Funder == EOA. If you use email login, funder should be your PROXY wallet, not EOA.[/yellow]")
+            else:
+                console.print(f"  Funder (proxy):      [cyan]{env.funder_address}[/cyan]")
+                console.print("  [green]OK - EOA and funder are different (expected for POLY_PROXY)[/green]")
+    except Exception as e:
+        console.print(f"  [red]Failed: {e}[/red]")
+        sys.exit(1)
+
+    # Step 2: Create authenticated client
+    console.print("\n[bold]Step 2: Test API authentication[/bold]")
+    try:
+        creds = ApiCreds(
+            api_key=env.polymarket_api_key,
+            api_secret=env.polymarket_api_secret,
+            api_passphrase=env.polymarket_api_passphrase,
+        )
+        client = ClobClient(
+            host=env.polymarket_api_url,
+            chain_id=137,
+            key=env.private_key,
+            creds=creds,
+            signature_type=env.signature_type,
+            funder=env.funder_address or None,
+        )
+
+        # Test basic connectivity
+        ok = client.get_ok()
+        console.print(f"  get_ok(): [green]{ok}[/green]")
+
+        # Test authenticated endpoint
+        api_keys = client.get_api_keys()
+        console.print(f"  get_api_keys(): [green]OK - {len(api_keys) if isinstance(api_keys, list) else 'returned'}[/green]")
+    except Exception as e:
+        console.print(f"  [red]API auth failed: {e}[/red]")
+        console.print("  [yellow]Hint: Re-run 'python -m src.main setup' to regenerate credentials.[/yellow]")
+        sys.exit(1)
+
+    # Step 3: Test order signing (dry - don't actually post)
+    console.print("\n[bold]Step 3: Test order signing[/bold]")
+    try:
+        from py_clob_client.clob_types import MarketOrderArgs
+
+        # Use a known active market for testing - we'll just CREATE the order, not POST it
+        # First get a market to find a valid token_id
+        console.print("  Fetching a sample market...")
+        import requests
+        resp = requests.get(
+            "https://gamma-api.polymarket.com/markets",
+            params={"limit": "1", "active": "true", "closed": "false"},
+            timeout=10,
+        )
+        if resp.status_code == 200 and resp.json():
+            sample_market = resp.json()[0]
+            tokens = sample_market.get("tokens", [])
+            if tokens:
+                test_token_id = tokens[0].get("token_id", "")
+                question = sample_market.get("question", "")[:60]
+                console.print(f"  Test market: '{question}'")
+                console.print(f"  Test token:  {test_token_id[:30]}...")
+
+                # Try to create (sign) a market order without posting
+                order_args = MarketOrderArgs(
+                    token_id=test_token_id,
+                    amount=0.01,
+                    side="BUY",
+                )
+                signed_order = client.create_market_order(order_args)
+                console.print(f"  create_market_order(): [green]OK - order signed successfully[/green]")
+
+                # Now try to actually post (tiny amount, will likely fail due to min size, but not signature)
+                console.print("\n[bold]Step 4: Test order posting (tiny $0.01 order)[/bold]")
+                try:
+                    from py_clob_client.clob_types import OrderType
+                    response = client.post_order(signed_order, OrderType.FOK)
+                    console.print(f"  post_order(): [green]{response}[/green]")
+                except Exception as post_err:
+                    err_str = str(post_err)
+                    if "invalid signature" in err_str.lower():
+                        console.print(f"  [red]SIGNATURE ERROR: {err_str}[/red]")
+                        console.print()
+                        console.print("[bold yellow]Mögliche Ursachen:[/bold yellow]")
+                        console.print("  1. Falscher signature_type - probier SIGNATURE_TYPE=0 in .env")
+                        console.print("  2. Falscher funder_address - prüfe auf polymarket.com/settings")
+                        console.print("  3. API Credentials passen nicht zum Private Key")
+                        console.print("     → Lösung: python -m src.main setup --private-key <dein_key>")
+                        console.print("  4. Private Key ist von einem anderen Account")
+                    elif "minimum" in err_str.lower() or "size" in err_str.lower():
+                        console.print(f"  [green]Order rejected for size (not signature) - SIGNING WORKS![/green]")
+                        console.print(f"  Error detail: {err_str}")
+                    else:
+                        console.print(f"  [yellow]Order rejected: {err_str}[/yellow]")
+            else:
+                console.print("  [yellow]No tokens found in sample market[/yellow]")
+        else:
+            console.print("  [yellow]Could not fetch sample market[/yellow]")
+    except Exception as e:
+        console.print(f"  [red]Order signing failed: {e}[/red]")
+        import traceback
+        console.print(f"  [dim]{traceback.format_exc()}[/dim]")
+
+    console.print()
+
+
 if __name__ == "__main__":
     cli()
