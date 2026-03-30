@@ -210,8 +210,10 @@ class EventParser:
         """Parse a raw blockchain event into a structured trade."""
         try:
             if raw.event_topic == ORDER_FILLED_TOPIC[2:] or raw.event_topic == ORDER_FILLED_TOPIC:
+                logger.info("event_type", type="OrderFilled", tx=raw.tx_hash[:16])
                 return await self._parse_order_filled(raw)
             elif raw.event_topic == ORDERS_MATCHED_TOPIC[2:] or raw.event_topic == ORDERS_MATCHED_TOPIC:
+                logger.info("event_type", type="OrdersMatched", tx=raw.tx_hash[:16])
                 return await self._parse_orders_matched(raw)
             else:
                 logger.debug("unknown_event_topic", topic=raw.event_topic)
@@ -264,7 +266,7 @@ class EventParser:
         wallet_addr = raw.matched_wallet.address.lower()
         is_maker = maker_addr.lower() == wallet_addr
 
-        logger.debug(
+        logger.info(
             "order_filled_raw",
             tx=raw.tx_hash[:16],
             maker=maker_addr[:10],
@@ -301,6 +303,7 @@ class EventParser:
                 token_id = str(taker_asset_id)
             amount_usdc = maker_amount / (10**USDC_DECIMALS)
             amount_tokens = taker_amount / (10**USDC_DECIMALS)
+            logger.info("branch_hit", branch="maker_asset_zero", is_maker=is_maker, direction=direction.value)
         elif taker_asset_id == 0:
             # Taker sends USDC, receives tokens -> taker is BUYING
             if is_maker:
@@ -311,6 +314,7 @@ class EventParser:
                 token_id = str(maker_asset_id)
             amount_usdc = taker_amount / (10**USDC_DECIMALS)
             amount_tokens = maker_amount / (10**USDC_DECIMALS)
+            logger.info("branch_hit", branch="taker_asset_zero", is_maker=is_maker, direction=direction.value)
         else:
             # Both assetIds are non-zero: both are conditional tokens.
             # This is the common case on the Neg Risk CTF Exchange where
@@ -440,6 +444,17 @@ class EventParser:
         taker_maker_addr = "0x" + topics[2].hex()[-40:]
         wallet_addr = raw.matched_wallet.address.lower()
 
+        logger.info(
+            "orders_matched_raw",
+            tx=raw.tx_hash[:16],
+            taker_maker=taker_maker_addr[:10],
+            wallet=wallet_addr[:10],
+            maker_asset_id=str(maker_asset_id)[:20],
+            taker_asset_id=str(taker_asset_id)[:20],
+            maker_amount=maker_amount,
+            taker_amount=taker_amount,
+        )
+
         # For OrdersMatched, the tracked wallet is the takerOrderMaker.
         # The taker sends takerAssetId and receives makerAssetId.
         if maker_asset_id == 0:
@@ -448,12 +463,14 @@ class EventParser:
             token_id = str(taker_asset_id)
             amount_tokens = taker_amount / (10**USDC_DECIMALS)
             amount_usdc = maker_amount / (10**USDC_DECIMALS)
+            logger.info("branch_hit_matched", branch="maker_asset_zero", direction=direction.value)
         elif taker_asset_id == 0:
             # takerAssetId=0 means taker sends USDC → BUY
             direction = TradeDirection.BUY
             token_id = str(maker_asset_id)
             amount_usdc = taker_amount / (10**USDC_DECIMALS)
             amount_tokens = maker_amount / (10**USDC_DECIMALS)
+            logger.info("branch_hit_matched", branch="taker_asset_zero", direction=direction.value)
         else:
             # Both non-zero: resolve tokens to determine direction
             maker_market = await self.market_resolver.resolve_token(str(maker_asset_id))
