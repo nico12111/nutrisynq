@@ -232,25 +232,17 @@ class EventParser:
 
         # Determine direction and amounts.
         #
-        # In Polymarket's CTF Exchange, the OrderFilled event works as:
-        # - The MAKER placed a limit order. makerAssetId is the token they offer.
-        # - The TAKER fills against it. takerAssetId is the token they offer.
-        # - One side offers outcome tokens, the other side "pays" in USDC
-        #   represented as the complementary position or amount.
-        #
-        # Key insight: In Polymarket CLOB, when matching a BUY order with
-        # a SELL order, the amounts represent:
+        # In OrderFilled events:
         # - makerAmountFilled = what the maker gave
         # - takerAmountFilled = what the taker gave
+        # - Maker sends makerAssetId, receives takerAssetId
+        # - Taker sends takerAssetId, receives makerAssetId
         #
-        # For the tracked wallet, we determine buy/sell by looking at
-        # which side has the larger asset ID (outcome token) vs smaller.
-        # The side with the outcome token is SELLING it, the other is BUYING.
-        #
-        # If both assetIds are non-zero (both are outcome tokens),
-        # we compare amounts to determine who is buying:
-        # - The side that gave MORE (in raw units) is the buyer (paying USDC-equivalent)
-        # - The side that gave LESS is the seller (giving tokens at a premium)
+        # Three cases:
+        # 1. makerAssetId=0: maker sends USDC → maker is BUYING
+        # 2. takerAssetId=0: taker sends USDC → taker is BUYING
+        # 3. Both non-zero (neg-risk exchange): resolve tokens via Gamma API
+        #    to determine which is the outcome token
 
         if maker_asset_id == 0:
             # Maker sends USDC, receives tokens -> maker is BUYING
@@ -273,25 +265,59 @@ class EventParser:
             amount_usdc = taker_amount / (10**USDC_DECIMALS)
             amount_tokens = maker_amount / (10**USDC_DECIMALS)
         else:
-            # Both assetIds are non-zero: both are outcome tokens.
-            # This happens in Polymarket's CTF Exchange where trades
-            # are between complementary outcome tokens.
+            # Both assetIds are non-zero: both are conditional tokens.
+            # This is the common case on the Neg Risk CTF Exchange where
+            # trades settle in conditional tokens, not USDC directly.
             #
-            # The maker's order defines the trade direction:
-            # - Maker SELLS makerAssetId and BUYS takerAssetId
-            # - Taker BUYS makerAssetId and SELLS takerAssetId
-            if is_maker:
-                # Maker is selling makerAssetId
-                direction = TradeDirection.SELL
+            # To determine buy/sell direction, we resolve both tokens
+            # against the Gamma API. The one that resolves to a known
+            # market is the outcome token being traded. The other is
+            # the complementary/payment token.
+            #
+            # - Maker sends makerAssetId, receives takerAssetId
+            # - Taker sends takerAssetId, receives makerAssetId
+            maker_market = await self.market_resolver.resolve_token(str(maker_asset_id))
+            taker_market = await self.market_resolver.resolve_token(str(taker_asset_id))
+
+            if maker_market and not taker_market:
+                # makerAssetId is the outcome token
                 token_id = str(maker_asset_id)
+                # Maker sends outcome token → maker is SELLING
+                if is_maker:
+                    direction = TradeDirection.SELL
+                else:
+                    direction = TradeDirection.BUY
+                amount_tokens = maker_amount / (10**USDC_DECIMALS)
+                amount_usdc = taker_amount / (10**USDC_DECIMALS)
+            elif taker_market and not maker_market:
+                # takerAssetId is the outcome token
+                token_id = str(taker_asset_id)
+                # Maker receives outcome token → maker is BUYING
+                if is_maker:
+                    direction = TradeDirection.BUY
+                else:
+                    direction = TradeDirection.SELL
+                amount_tokens = taker_amount / (10**USDC_DECIMALS)
+                amount_usdc = maker_amount / (10**USDC_DECIMALS)
+            elif maker_market and taker_market:
+                # Both resolve (e.g. Yes vs No on same market).
+                # Use makerAssetId as reference; maker sends it → SELL.
+                token_id = str(maker_asset_id)
+                if is_maker:
+                    direction = TradeDirection.SELL
+                else:
+                    direction = TradeDirection.BUY
                 amount_tokens = maker_amount / (10**USDC_DECIMALS)
                 amount_usdc = taker_amount / (10**USDC_DECIMALS)
             else:
-                # Taker is buying makerAssetId (receiving it)
-                direction = TradeDirection.BUY
-                token_id = str(maker_asset_id)
-                amount_tokens = maker_amount / (10**USDC_DECIMALS)
-                amount_usdc = taker_amount / (10**USDC_DECIMALS)
+                # Neither resolves — cannot determine trade direction
+                logger.warning(
+                    "neither_token_resolves",
+                    tx=raw.tx_hash[:16],
+                    maker_asset=str(maker_asset_id)[:20],
+                    taker_asset=str(taker_asset_id)[:20],
+                )
+                return None
 
         # Calculate approximate price
         price = amount_usdc / amount_tokens if amount_tokens > 0 else 0.0
@@ -354,17 +380,51 @@ class EventParser:
         taker_maker_addr = "0x" + topics[2].hex()[-40:]
         wallet_addr = raw.matched_wallet.address.lower()
 
-        # For OrdersMatched, the tracked wallet is the takerOrderMaker
+        # For OrdersMatched, the tracked wallet is the takerOrderMaker.
+        # The taker sends takerAssetId and receives makerAssetId.
         if maker_asset_id == 0:
+            # makerAssetId=0 means USDC side → taker receives USDC → SELL
             direction = TradeDirection.SELL
             token_id = str(taker_asset_id)
             amount_tokens = taker_amount / (10**USDC_DECIMALS)
             amount_usdc = maker_amount / (10**USDC_DECIMALS)
-        else:
+        elif taker_asset_id == 0:
+            # takerAssetId=0 means taker sends USDC → BUY
             direction = TradeDirection.BUY
             token_id = str(maker_asset_id)
             amount_usdc = taker_amount / (10**USDC_DECIMALS)
             amount_tokens = maker_amount / (10**USDC_DECIMALS)
+        else:
+            # Both non-zero: resolve tokens to determine direction
+            maker_market = await self.market_resolver.resolve_token(str(maker_asset_id))
+            taker_market = await self.market_resolver.resolve_token(str(taker_asset_id))
+
+            if maker_market and not taker_market:
+                # Taker receives makerAssetId (the outcome token) → BUY
+                token_id = str(maker_asset_id)
+                direction = TradeDirection.BUY
+                amount_tokens = maker_amount / (10**USDC_DECIMALS)
+                amount_usdc = taker_amount / (10**USDC_DECIMALS)
+            elif taker_market and not maker_market:
+                # Taker sends takerAssetId (the outcome token) → SELL
+                token_id = str(taker_asset_id)
+                direction = TradeDirection.SELL
+                amount_tokens = taker_amount / (10**USDC_DECIMALS)
+                amount_usdc = maker_amount / (10**USDC_DECIMALS)
+            elif maker_market and taker_market:
+                # Both resolve — taker receives makerAssetId
+                token_id = str(maker_asset_id)
+                direction = TradeDirection.BUY
+                amount_tokens = maker_amount / (10**USDC_DECIMALS)
+                amount_usdc = taker_amount / (10**USDC_DECIMALS)
+            else:
+                logger.warning(
+                    "neither_token_resolves",
+                    tx=raw.tx_hash[:16],
+                    maker_asset=str(maker_asset_id)[:20],
+                    taker_asset=str(taker_asset_id)[:20],
+                )
+                return None
 
         price = amount_usdc / amount_tokens if amount_tokens > 0 else 0.0
 
