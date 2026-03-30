@@ -16,7 +16,8 @@
     "max_slippage_percent": 2.0,
     "max_parallel_positions": 50,
     "min_trade_amount_usd": 0.10,
-    "max_trade_amount_usd": 0.10
+    "max_trade_amount_usd": 0.10,
+    "single_trade_mode": true
   },
   "risk": {
     "max_exposure_per_market_usd": 5.0,

@@ -25,7 +25,7 @@ from src.config.settings import AppConfig, load_config
 from src.engine.decision_engine import DecisionAction, DecisionEngine
 from src.execution.polymarket_executor import PolymarketExecutor
 from src.logging_mod.logger import get_logger, setup_logging
-from src.parser.event_parser import EventParser, ParsedTrade
+from src.parser.event_parser import EventParser, ParsedTrade, TradeDirection
 from src.risk.risk_manager import RiskManager
 from src.tracker.wallet_tracker import RawTradeEvent, WalletTracker
 
@@ -55,6 +55,9 @@ class CopyTradingBot:
 
         self.event_queue: asyncio.Queue[RawTradeEvent] = asyncio.Queue()
         self._running = False
+        self._single_trade_mode = config.trading.single_trade_mode
+        self._single_trade_token: str | None = None  # token we bought
+        self._single_trade_done = False
         self._stats = {
             "events_detected": 0,
             "trades_parsed": 0,
@@ -154,6 +157,25 @@ class CopyTradingBot:
                 # Log the detected trade
                 console.print(f"\n[cyan]Trade detected:[/cyan] {parsed_trade.summary}")
 
+                # Single-trade mode: only take one buy, then wait for its sell
+                if self._single_trade_mode:
+                    if self._single_trade_done:
+                        console.print("  [dim]Single-trade test complete, ignoring.[/dim]")
+                        continue
+                    if self._single_trade_token is None:
+                        # Waiting for a BUY — skip all sells
+                        if parsed_trade.direction != TradeDirection.BUY:
+                            console.print("  [dim]Waiting for first BUY, skipping SELL.[/dim]")
+                            continue
+                    else:
+                        # We have an open position — only accept SELL of same token
+                        if parsed_trade.direction != TradeDirection.SELL:
+                            console.print("  [dim]Position open, skipping new BUY.[/dim]")
+                            continue
+                        if parsed_trade.token_id != self._single_trade_token:
+                            console.print("  [dim]SELL for different token, skipping.[/dim]")
+                            continue
+
                 # Make decision
                 decision = self.decision_engine.evaluate(parsed_trade)
 
@@ -180,6 +202,24 @@ class CopyTradingBot:
                 if result.success:
                     self._stats["trades_executed"] += 1
                     console.print(f"  [green]{result.summary}[/green]")
+
+                    # Single-trade mode tracking
+                    if self._single_trade_mode:
+                        if decision.action == DecisionAction.EXECUTE_BUY:
+                            self._single_trade_token = parsed_trade.token_id
+                            console.print(
+                                f"\n[bold yellow]Single-trade mode: Position opened on "
+                                f"'{parsed_trade.market_question}' ({parsed_trade.outcome}). "
+                                f"Waiting for SELL to close...[/bold yellow]"
+                            )
+                        elif decision.action == DecisionAction.EXECUTE_SELL:
+                            self._single_trade_done = True
+                            console.print(
+                                f"\n[bold green]Single-trade test COMPLETE! "
+                                f"Position closed. Bot will stop.[/bold green]"
+                            )
+                            await self.stop()
+                            return
                 else:
                     self._stats["errors"] += 1
                     console.print(f"  [red]Execution failed: {result.error}[/red]")

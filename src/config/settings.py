@@ -42,6 +42,7 @@ class TradingConfig(BaseModel):
     max_parallel_positions: int = 10
     min_trade_amount_usd: float = 1.0
     max_trade_amount_usd: float = 100.0
+    single_trade_mode: bool = False
 
 
 class RiskConfig(BaseModel):
