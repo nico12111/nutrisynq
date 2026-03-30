@@ -296,21 +296,33 @@ def test_auth(config: str) -> None:
     try:
         from py_clob_client.clob_types import MarketOrderArgs
 
-        # Use a known active market for testing - we'll just CREATE the order, not POST it
-        # First get a market to find a valid token_id
-        console.print("  Fetching a sample market...")
+        # Find an active market with tokens
+        console.print("  Fetching active markets...")
         import requests
-        resp = requests.get(
-            "https://gamma-api.polymarket.com/markets",
-            params={"limit": "1", "active": "true", "closed": "false"},
-            timeout=10,
-        )
-        if resp.status_code == 200 and resp.json():
-            sample_market = resp.json()[0]
-            tokens = sample_market.get("tokens", [])
-            if tokens:
-                test_token_id = tokens[0].get("token_id", "")
-                question = sample_market.get("question", "")[:60]
+        test_token_id = None
+        question = ""
+
+        # Try multiple API queries to find a market with tokens
+        for query_params in [
+            {"limit": "10", "active": "true", "closed": "false"},
+            {"limit": "10"},
+        ]:
+            resp = requests.get(
+                "https://gamma-api.polymarket.com/markets",
+                params=query_params,
+                timeout=10,
+            )
+            if resp.status_code == 200:
+                for m in resp.json():
+                    tokens = m.get("tokens", [])
+                    if tokens and tokens[0].get("token_id"):
+                        test_token_id = tokens[0]["token_id"]
+                        question = m.get("question", "")[:60]
+                        break
+            if test_token_id:
+                break
+
+        if test_token_id:
                 console.print(f"  Test market: '{question}'")
                 console.print(f"  Test token:  {test_token_id[:30]}...")
 
@@ -345,10 +357,8 @@ def test_auth(config: str) -> None:
                         console.print(f"  Error detail: {err_str}")
                     else:
                         console.print(f"  [yellow]Order rejected: {err_str}[/yellow]")
-            else:
-                console.print("  [yellow]No tokens found in sample market[/yellow]")
         else:
-            console.print("  [yellow]Could not fetch sample market[/yellow]")
+            console.print("  [yellow]No active market with tokens found[/yellow]")
     except Exception as e:
         console.print(f"  [red]Order signing failed: {e}[/red]")
         import traceback
