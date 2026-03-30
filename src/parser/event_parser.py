@@ -142,8 +142,20 @@ class MarketResolver:
         """Determine which outcome (Yes/No) the token_id represents."""
         tokens = market.get("tokens", [])
         for token in tokens:
-            if str(token.get("token_id", "")) == str(token_id):
+            api_token_id = str(token.get("token_id", ""))
+            if api_token_id == str(token_id):
                 return token.get("outcome", "Unknown")
+        # Fallback: check clobTokenIds field on the market itself
+        clob_ids = market.get("clobTokenIds", market.get("clob_token_ids", ""))
+        if isinstance(clob_ids, str) and str(token_id) in clob_ids:
+            # Single-outcome market or first match
+            if tokens:
+                return tokens[0].get("outcome", "Unknown")
+        logger.debug(
+            "outcome_not_matched",
+            token_id=str(token_id)[:20],
+            api_tokens=[str(t.get("token_id", ""))[:20] for t in tokens],
+        )
         return "Unknown"
 
     async def close(self) -> None:

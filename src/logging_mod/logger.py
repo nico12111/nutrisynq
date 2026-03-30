@@ -31,6 +31,13 @@ def setup_logging(log_level: str = "INFO", log_file: str = "logs/bot.log") -> No
     file_handler.setLevel(logging.DEBUG)
     root_logger.addHandler(file_handler)
 
+    # Silence noisy third-party loggers
+    for noisy in (
+        "httpx", "httpcore", "hpack", "h2", "urllib3",
+        "web3", "asyncio", "aiohttp", "requests",
+    ):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
+
     # structlog configuration
     structlog.configure(
         processors=[
