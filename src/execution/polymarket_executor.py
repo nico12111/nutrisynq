@@ -300,7 +300,10 @@ class PolymarketExecutor:
             size = round(decision.amount_usd / order_price, 2) if order_price > 0 else 0
 
             # Determine if this is a neg risk market
-            is_neg_risk = getattr(decision.trade, "neg_risk", False)
+            # Default to True — Bitcoin/Ethereum Up/Down markets are all neg risk
+            is_neg_risk = getattr(decision.trade, "neg_risk", True)
+            # Force True for now since all tracked markets use Neg Risk Exchange
+            is_neg_risk = True
 
             logger.info(
                 "placing_order",
