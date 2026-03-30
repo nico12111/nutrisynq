@@ -270,25 +270,55 @@ class PolymarketExecutor:
             )
 
         try:
-            from py_clob_client.clob_types import MarketOrderArgs, OrderType
+            from py_clob_client.clob_types import OrderArgs, OrderType
 
-            # Get current price for logging
+            # Get current price from order book
             current_price = await self.get_market_price(decision.token_id)
             if current_price <= 0:
                 current_price = decision.trade.price
 
-            # Create market order
-            # amount is in USDC for buys, in shares for sells
-            order_args = MarketOrderArgs(
+            # For BUY: use best ask (or slightly above mid) to ensure fill
+            # For SELL: use best bid (or slightly below mid) to ensure fill
+            if side == "BUY":
+                # Get best ask for aggressive buy
+                book = self._client.get_order_book(decision.token_id)
+                if book.asks:
+                    order_price = float(book.asks[0].price)
+                else:
+                    order_price = min(current_price * 1.02, 0.99)
+            else:
+                book = self._client.get_order_book(decision.token_id)
+                if book.bids:
+                    order_price = float(book.bids[0].price)
+                else:
+                    order_price = max(current_price * 0.98, 0.01)
+
+            # Round price to 2 decimals (Polymarket tick size)
+            order_price = round(order_price, 2)
+
+            # Calculate size in tokens from USDC amount
+            size = round(decision.amount_usd / order_price, 2) if order_price > 0 else 0
+
+            logger.info(
+                "placing_order",
+                side=side,
+                token_id=decision.token_id[:20],
+                price=order_price,
+                size=size,
+                amount_usd=decision.amount_usd,
+            )
+
+            # Use create_order (limit order) — signing works reliably
+            order_args = OrderArgs(
                 token_id=decision.token_id,
-                amount=decision.amount_usd,
+                price=order_price,
+                size=size,
                 side=side,
             )
 
-            # Sign and create the order
-            signed_order = self._client.create_market_order(order_args)
+            signed_order = self._client.create_order(order_args)
 
-            # Submit with FOK (Fill-Or-Kill) to avoid partial fills
+            # Submit with FOK (Fill-Or-Kill) to avoid partial fills hanging
             response = self._client.post_order(signed_order, OrderType.FOK)
 
             order_id = response.get("orderID", "")
