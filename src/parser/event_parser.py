@@ -34,6 +34,7 @@ from web3 import Web3
 from src.logging_mod.logger import get_logger
 from src.utils.constants import (
     GAMMA_API_BASE,
+    NEG_RISK_CTF_EXCHANGE_ADDRESS,
     ORDER_FILLED_TOPIC,
     ORDERS_MATCHED_TOPIC,
     USDC_DECIMALS,
@@ -68,6 +69,7 @@ class ParsedTrade:
     tx_hash: str
     block_number: int
     timestamp: int
+    neg_risk: bool = False  # True if from Neg Risk CTF Exchange
 
     @property
     def summary(self) -> str:
@@ -463,6 +465,8 @@ class EventParser:
                 clob_id=clob_token_id[:20],
             )
 
+        is_neg_risk = raw.contract_address.lower() == NEG_RISK_CTF_EXCHANGE_ADDRESS.lower()
+
         trade = ParsedTrade(
             wallet_address=wallet_addr,
             wallet_label=raw.matched_wallet.label or wallet_addr[:10],
@@ -478,9 +482,10 @@ class EventParser:
             tx_hash=raw.tx_hash,
             block_number=raw.block_number,
             timestamp=raw.timestamp,
+            neg_risk=is_neg_risk,
         )
 
-        logger.info("trade_parsed", summary=trade.summary)
+        logger.info("trade_parsed", summary=trade.summary, neg_risk=is_neg_risk)
         return trade
 
     async def _parse_orders_matched(self, raw: RawTradeEvent) -> ParsedTrade | None:
@@ -594,6 +599,8 @@ class EventParser:
                 clob_id=clob_token_id[:20],
             )
 
+        is_neg_risk = raw.contract_address.lower() == NEG_RISK_CTF_EXCHANGE_ADDRESS.lower()
+
         trade = ParsedTrade(
             wallet_address=wallet_addr,
             wallet_label=raw.matched_wallet.label or wallet_addr[:10],
@@ -609,9 +616,10 @@ class EventParser:
             tx_hash=raw.tx_hash,
             block_number=raw.block_number,
             timestamp=raw.timestamp,
+            neg_risk=is_neg_risk,
         )
 
-        logger.info("trade_parsed", summary=trade.summary)
+        logger.info("trade_parsed", summary=trade.summary, neg_risk=is_neg_risk)
         return trade
 
     async def close(self) -> None:

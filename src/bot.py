@@ -203,6 +203,7 @@ class CopyTradingBot:
                                 tx_hash=parsed_trade.tx_hash,
                                 block_number=parsed_trade.block_number,
                                 timestamp=parsed_trade.timestamp,
+                                neg_risk=parsed_trade.neg_risk,
                             )
                         else:
                             console.print("  [dim]Position open, skipping unrelated trade.[/dim]")

@@ -270,7 +270,7 @@ class PolymarketExecutor:
             )
 
         try:
-            from py_clob_client.clob_types import OrderArgs, OrderType
+            from py_clob_client.clob_types import OrderArgs, OrderType, PartialCreateOrderOptions
 
             # Get current price from order book
             current_price = await self.get_market_price(decision.token_id)
@@ -299,6 +299,9 @@ class PolymarketExecutor:
             # Calculate size in tokens from USDC amount
             size = round(decision.amount_usd / order_price, 2) if order_price > 0 else 0
 
+            # Determine if this is a neg risk market
+            is_neg_risk = getattr(decision.trade, "neg_risk", False)
+
             logger.info(
                 "placing_order",
                 side=side,
@@ -306,17 +309,19 @@ class PolymarketExecutor:
                 price=order_price,
                 size=size,
                 amount_usd=decision.amount_usd,
+                neg_risk=is_neg_risk,
             )
 
-            # Use create_order (limit order) — signing works reliably
+            # Use create_order (limit order) with neg_risk flag
             order_args = OrderArgs(
                 token_id=decision.token_id,
                 price=order_price,
                 size=size,
                 side=side,
             )
+            options = PartialCreateOrderOptions(neg_risk=is_neg_risk)
 
-            signed_order = self._client.create_order(order_args)
+            signed_order = self._client.create_order(order_args, options)
 
             # Submit with FOK (Fill-Or-Kill) to avoid partial fills hanging
             response = self._client.post_order(signed_order, OrderType.FOK)
