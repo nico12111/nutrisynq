@@ -296,31 +296,43 @@ def test_auth(config: str) -> None:
     try:
         from py_clob_client.clob_types import MarketOrderArgs
 
-        # Find an active market with tokens
-        console.print("  Fetching active markets...")
-        import requests
+        # Find an active market with tokens via CLOB client
+        console.print("  Fetching active markets via CLOB API...")
         test_token_id = None
         question = ""
 
-        # Try multiple API queries to find a market with tokens
-        for query_params in [
-            {"limit": "10", "active": "true", "closed": "false"},
-            {"limit": "10"},
-        ]:
-            resp = requests.get(
-                "https://gamma-api.polymarket.com/markets",
-                params=query_params,
-                timeout=10,
-            )
-            if resp.status_code == 200:
-                for m in resp.json():
-                    tokens = m.get("tokens", [])
+        try:
+            # Use CLOB client's get_sampling_markets to find active markets
+            sampling = client.get_sampling_markets()
+            if sampling and isinstance(sampling, list):
+                for market_data in sampling:
+                    tokens = market_data.get("tokens", [])
                     if tokens and tokens[0].get("token_id"):
                         test_token_id = tokens[0]["token_id"]
-                        question = m.get("question", "")[:60]
+                        question = market_data.get("question", market_data.get("condition_id", ""))[:60]
                         break
-            if test_token_id:
-                break
+        except Exception as e:
+            console.print(f"  [dim]get_sampling_markets failed: {e}[/dim]")
+
+        # Fallback: try CLOB get_markets
+        if not test_token_id:
+            try:
+                clob_markets = client.get_markets(next_cursor="")
+                if clob_markets and isinstance(clob_markets, dict):
+                    for m in clob_markets.get("data", clob_markets.get("markets", [])):
+                        tokens = m.get("tokens", [])
+                        if tokens and tokens[0].get("token_id"):
+                            test_token_id = tokens[0]["token_id"]
+                            question = m.get("question", m.get("condition_id", ""))[:60]
+                            break
+            except Exception as e:
+                console.print(f"  [dim]get_markets failed: {e}[/dim]")
+
+        # Fallback: use a known token from recent bot runs
+        if not test_token_id:
+            test_token_id = "45292807275169734465"
+            question = "(fallback: recent Bitcoin Up/Down token)"
+            console.print("  [yellow]Using known token ID from recent bot activity[/yellow]")
 
         if test_token_id:
                 console.print(f"  Test market: '{question}'")
